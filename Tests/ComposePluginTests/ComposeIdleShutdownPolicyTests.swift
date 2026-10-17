@@ -33,15 +33,8 @@ struct ComposeIdleShutdownPolicyTests {
         }
 
         func run(seconds: Int) throws -> Int32 {
-            let shell = Process()
-            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-            shell.arguments = [
-                "-c",
-                ComposeMachineManager.idleShutdownScript(seconds: seconds, environmentFile: environmentFile, systemctl: systemctl),
-            ]
-            try shell.run()
-            shell.waitUntilExit()
-            return shell.terminationStatus
+            let script = ComposeMachineManager.idleShutdownScript(seconds: seconds, environmentFile: environmentFile, systemctl: systemctl)
+            return try IsolatedChild.spawn("/bin/sh", ["-c", script]).waitForExit()
         }
 
         var fileContents: String? {
@@ -55,12 +48,8 @@ struct ComposeIdleShutdownPolicyTests {
 
     @Test
     func scriptIsValidShell() throws {
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-n", "-c", ComposeMachineManager.idleShutdownScript(seconds: 600)]
-        try shell.run()
-        shell.waitUntilExit()
-        #expect(shell.terminationStatus == 0)
+        let shell = try IsolatedChild.spawn("/bin/sh", ["-n", "-c", ComposeMachineManager.idleShutdownScript(seconds: 600)])
+        #expect(shell.waitForExit() == 0)
     }
 
     @Test
