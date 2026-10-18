@@ -106,9 +106,8 @@ pull request description.
 
 ## Code style
 
-- `mise run check` must pass; CI runs it too. It runs the linters configured
-  in `hk.pkl`: swift-format, ShellCheck, actionlint, rumdl, Tombi, typos, and
-  basic file hygiene checks. The pre-commit hook applies their fixes to staged
+- `mise run check` must pass; CI runs it too. It runs all linters and checks
+  configured in `hk.pkl`. The pre-commit hook applies their fixes to staged
   files, and the commit-msg hook checks the message with Cocogitto.
 - `make lint` must pass. Formatting follows the repository's `.swift-format`
   configuration: four-space indentation and a 180-column limit. Run
