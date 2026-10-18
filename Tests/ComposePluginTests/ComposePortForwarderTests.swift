@@ -53,12 +53,8 @@ struct ComposePortForwarderTests {
 
     @Test
     func watchScriptIsValidShell() throws {
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-n", "-c", ComposeGuestPortSource.watchScript]
-        try shell.run()
-        shell.waitUntilExit()
-        #expect(shell.terminationStatus == 0)
+        let shell = try IsolatedChild.spawn("/bin/sh", ["-n", "-c", ComposeGuestPortSource.watchScript])
+        #expect(shell.waitForExit() == 0)
     }
 
     @Test
@@ -779,6 +775,14 @@ struct IsolatedChild: Sendable {
         }
     }
 
+    /// Waits for the child to exit and returns its exit code, or -1 if a
+    /// signal ended it, as `Process.terminationStatus` does.
+    func waitForExit() -> Int32 {
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        return status & 0x7f == 0 ? (status >> 8) & 0xff : -1
+    }
+
     /// Kills the child's process group and reaps the child.
     func kill() {
         _ = Darwin.kill(-pid, SIGKILL)
@@ -829,8 +833,16 @@ private struct TCPServer: Sendable {
         return server.port
     }
 
+    /// Accepts a connection that a process spawned by a concurrent test
+    /// cannot inherit, so closing it reaches the peer. Darwin has no
+    /// accept4, so a spawn between the two calls can still inherit it;
+    /// tests spawn with POSIX_SPAWN_CLOEXEC_DEFAULT, which passes only stdio.
     func acceptOne() -> Int32 {
-        accept(descriptor, nil, nil)
+        let connection = accept(descriptor, nil, nil)
+        if connection >= 0 {
+            _ = fcntl(connection, F_SETFD, FD_CLOEXEC)
+        }
+        return connection
     }
 
     func close() {

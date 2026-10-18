@@ -67,7 +67,7 @@ struct ComposeSocketForwarderTests {
     }
 
     @Test
-    func lockAllowsOneOwnerAndRecordsIt() throws {
+    func lockAllowsOneOwnerAndRecordsIt() async throws {
         let directory = try Self.makeDirectory()
         defer { try? FileManager.default.removeItem(atPath: directory.string) }
         let path = directory.appending("docker.socket.lock")
@@ -77,7 +77,10 @@ struct ComposeSocketForwarderTests {
         #expect(ComposeSocketLock.owner(at: path) == .init(pid: getpid(), identity: "build-a"))
 
         first.release()
-        let second = try #require(try ComposeSocketLock.acquire(path: path, identity: "build-b"))
+        // A posix_spawn on another thread copies every descriptor before
+        // exec closes the close-on-exec ones, so for a moment the child holds
+        // the released lock too. Wait for it, as the forwarder service does.
+        let second = try #require(try await ComposeSocketLock.acquire(path: path, identity: "build-b", waitingUpTo: .seconds(2)))
         #expect(ComposeSocketLock.owner(at: path)?.identity == "build-b")
         second.release()
     }
@@ -146,7 +149,7 @@ struct ComposeSocketForwarderTests {
     }
 
     @Test
-    func peerClosedIgnoresHalfCloseButDetectsDisconnect() throws {
+    func peerClosedIgnoresHalfCloseButDetectsDisconnect() async throws {
         var sockets: [Int32] = [0, 0]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0)
         closeOnExec(sockets)
@@ -158,7 +161,13 @@ struct ComposeSocketForwarderTests {
         shutdown(sockets[1], SHUT_WR)
         #expect(!ComposeGuestBridge.peerClosed(sockets[0]))
         close(sockets[1])
-        #expect(ComposeGuestBridge.peerClosed(sockets[0]))
+        // A posix_spawn on another thread can hold the closed end for a moment.
+        var closed = ComposeGuestBridge.peerClosed(sockets[0])
+        for _ in 0..<100 where !closed {
+            try await Task.sleep(for: .milliseconds(20))
+            closed = ComposeGuestBridge.peerClosed(sockets[0])
+        }
+        #expect(closed)
     }
 
     @Test

@@ -20,12 +20,8 @@ struct ComposeCompletionTests {
             _container_compose_complete
             [[ "${COMPREPLY[0]}" == previous ]]
             """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", probe]
-        try process.run()
-        process.waitUntilExit()
-        #expect(process.terminationStatus == 0)
+        let process = try IsolatedChild.spawn("/bin/bash", ["-c", probe])
+        #expect(process.waitForExit() == 0)
     }
 
     @Test(arguments: ComposeCompletionShell.allCases)
