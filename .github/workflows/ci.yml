@@ -1,6 +1,10 @@
 name: CI
 on:
   pull_request:
+  # Pushes to main save the build cache. Pull requests can only restore caches
+  # saved on their base branch, not those saved by other pull requests.
+  push:
+    branches: [main]
 permissions:
   contents: read
 jobs:
@@ -13,12 +17,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; inherited from the source repository
       - name: Check toolchain
-        run: swift --version
+        id: toolchain
+        run: |
+          swift --version
+          echo "hash=$(swift --version 2>&1 | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # Swift Build compares output timestamps to the nanosecond. actions/cache
+      # keeps them only when it archives with GNU tar; macOS's bsdtar truncates
+      # them to seconds, and every restored output would then be rebuilt.
+      - name: Check GNU tar
+        if: runner.os == 'macOS'
+        run: gtar --version | head -1
+      # .build holds the debug build for the tests and the release build for
+      # staging. Restoring it from an older commit rebuilds only what changed.
+      - name: Restore build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-
       - name: Unit tests
         run: make test
       - name: Build and stage macOS plugin
         if: runner.os == 'macOS'
         run: make stage
+      # Only main saves, so pull requests do not fill the repository's cache quota.
+      - name: Save build cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: build-${{ runner.os }}-${{ steps.toolchain.outputs.hash }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ github.sha }}
   lint:
     # macOS, so swift format is Xcode's, the same one contributors run.
     runs-on: macos-26
