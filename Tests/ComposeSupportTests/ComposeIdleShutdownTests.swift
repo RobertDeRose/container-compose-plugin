@@ -153,7 +153,7 @@ struct ComposeIdleShutdownTests {
         defer { posix_spawnattr_destroy(&attributes) }
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
 
-        let argv: [UnsafeMutablePointer<CChar>?] = ["/bin/sh", path].map { strdup($0) } + [nil]
+        let argv: [UnsafeMutablePointer<CChar>?] = (["/bin/sh", path] as [String]).map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
             for pointer in argv + envp {
