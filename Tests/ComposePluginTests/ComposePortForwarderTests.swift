@@ -836,7 +836,7 @@ private struct TCPServer: Sendable {
     /// Accepts a connection that a process spawned by a concurrent test
     /// cannot inherit, so closing it reaches the peer. Darwin has no
     /// accept4, so a spawn between the two calls can still inherit it;
-    /// tests spawn through IsolatedChild, which passes only its stdio.
+    /// tests spawn with POSIX_SPAWN_CLOEXEC_DEFAULT, which passes only stdio.
     func acceptOne() -> Int32 {
         let connection = accept(descriptor, nil, nil)
         if connection >= 0 {

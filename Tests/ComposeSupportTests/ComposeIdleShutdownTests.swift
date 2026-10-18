@@ -126,19 +126,58 @@ struct ComposeIdleShutdownTests {
             environment["COMPOSE_IDLE_SHUTDOWN_RUN_ONCE"] = "1"
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [script.path]
-        process.environment = environment
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
+        let status = try runShell(script.path, environment: environment)
 
         let output =
             FileManager.default.fileExists(atPath: systemctlLog.path)
             ? try String(contentsOf: systemctlLog, encoding: .utf8)
             : ""
-        return ScriptResult(status: process.terminationStatus, systemctlOutput: output)
+        return ScriptResult(status: status, systemctlOutput: output)
+    }
+
+    /// Runs the script with `/bin/sh` and returns its exit code, or -1 if a
+    /// signal ended it. On macOS the plugin tests run in this process, and
+    /// Foundation's `Process` passes every inheritable descriptor to its
+    /// child, so a socket one of them has just accepted could stay open in
+    /// the shell. The child gets only stdio from /dev/null instead.
+    private func runShell(_ path: String, environment: [String: String]) throws -> Int32 {
+        #if os(macOS)
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+            posix_spawn_file_actions_addopen(&actions, descriptor, "/dev/null", O_RDWR, 0)
+        }
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+
+        let argv: [UnsafeMutablePointer<CChar>?] = ["/bin/sh", path].map { strdup($0) } + [nil]
+        let envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer {
+            for pointer in argv + envp {
+                free(pointer)
+            }
+        }
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, "/bin/sh", &actions, &attributes, argv, envp)
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EIO)
+        }
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        return status & 0x7f == 0 ? (status >> 8) & 0xff : -1
+        #else
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [path]
+        process.environment = environment
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+        #endif
     }
 }
