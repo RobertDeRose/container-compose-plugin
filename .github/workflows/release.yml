@@ -52,6 +52,9 @@ jobs:
       - name: Release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Run only the locked Cocogitto installed above; never fetch the
+          # linters or anything else in mise.toml mid-release.
+          MISE_EXEC_AUTO_INSTALL: "false"
         run: |
           # Do not release a stale commit if main advanced while this queued.
           git fetch -q origin main
