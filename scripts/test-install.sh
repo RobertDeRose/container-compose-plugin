@@ -13,21 +13,84 @@ prefix="$root/prefix with spaces"
 ./scripts/install.sh --prefix "$prefix" >/dev/null
 destination="$prefix/libexec/container-plugins/compose"
 [[ -x "$destination/bin/compose" ]]
-# Installing over this plugin's own installation upgrades it in place.
-printf '%s\n' 'new-version' > "$COMPOSE_STAGING_DIR/resources/version"
-./scripts/install.sh --prefix "$prefix" >/dev/null
-[[ $(cat "$destination/resources/version") == new-version ]]
-# --replace is still accepted from callers written for earlier installers.
-printf '%s\n' 'newer-version' > "$COMPOSE_STAGING_DIR/resources/version"
-./scripts/install.sh --prefix "$prefix" --replace >/dev/null
-[[ $(cat "$destination/resources/version") == newer-version ]]
+diff -r "$COMPOSE_STAGING_DIR" "$destination"
+# Both upgrade entry points replace the complete payload, remove obsolete
+# files, and leave other plugins alone. Paths with spaces must keep working.
+sibling="${destination%/compose}/another-plugin"
+mkdir -p "$sibling"
+printf '%s\n' 'another plugin' > "$sibling/keep"
+for version in new-version newer-version; do
+    mkdir -p "$destination/obsolete-directory"
+    printf '%s\n' 'obsolete' > "$destination/obsolete-directory/file"
+    printf '%s\n' 'obsolete' > "$destination/resources/obsolete"
+    printf '%s\n' '#!/bin/sh' "echo $version" > "$COMPOSE_STAGING_DIR/bin/compose"
+    printf 'abstract = "%s"\n' "$version" > "$COMPOSE_STAGING_DIR/config.toml"
+    printf '%s\n' "$version" > "$COMPOSE_STAGING_DIR/resources/version"
+    install_args=(--prefix "$prefix")
+    # --replace is still accepted from callers written for earlier installers.
+    if [[ $version == newer-version ]]; then install_args+=(--replace); fi
+    ./scripts/install.sh "${install_args[@]}" >/dev/null
+    diff -r "$COMPOSE_STAGING_DIR" "$destination"
+    [[ -x "$destination/bin/compose" && $("$destination/bin/compose") == "$version" ]]
+    [[ $(cat "$sibling/keep") == 'another plugin' ]]
+done
+
+assert_install_refused() {
+    local refused_destination=$1
+    shift
+    if ./scripts/install.sh "$@" >"$root/refusal.log" 2>&1; then
+        echo "Installer overwrote $refused_destination." >&2; exit 1
+    else
+        [[ $? == 1 ]] || { cat "$root/refusal.log" >&2; exit 1; }
+    fi
+    [[ $(cat "$root/refusal.log") == "Refusing to overwrite $refused_destination:"* ]] || {
+        cat "$root/refusal.log" >&2; exit 1;
+    }
+}
+
+# Neither invocation may alter a foreign directory, a file, or a directory
+# whose marker is not a regular file.
 rm "$destination/.container-compose-plugin"
-if ./scripts/install.sh --prefix "$prefix" --replace >/dev/null 2>&1; then
-    echo 'Installer overwrote a foreign plugin.' >&2; exit 1
-fi
-if ./scripts/install.sh --prefix "$prefix" >/dev/null 2>&1; then
-    echo 'Installer overwrote a foreign plugin.' >&2; exit 1
-fi
+cp -R "$destination" "$root/foreign-original"
+for kind in foreign-directory regular-file marker-directory; do
+    refused_prefix="$root/$kind"
+    refused_destination="$refused_prefix/libexec/container-plugins/compose"
+    mkdir -p "${refused_destination%/compose}"
+    case "$kind" in
+        foreign-directory) cp -R "$root/foreign-original" "$refused_destination" ;;
+        regular-file) printf '%s\n' 'foreign plugin file' > "$refused_destination" ;;
+        marker-directory)
+            cp -R "$root/foreign-original" "$refused_destination"
+            mkdir "$refused_destination/.container-compose-plugin" ;;
+    esac
+    cp -R "$refused_destination" "$root/$kind-original"
+    for mode in default legacy; do
+        install_args=(--prefix "$refused_prefix")
+        if [[ $mode == legacy ]]; then install_args+=(--replace); fi
+        assert_install_refused "$refused_destination" "${install_args[@]}"
+        diff -r "$root/$kind-original" "$refused_destination"
+    done
+done
+
+# A symlink is refused even when its target carries this plugin's marker.
+# A dangling symlink must also survive both attempts unchanged.
+linked_plugin="$root/linked plugin"
+cp -R "$COMPOSE_STAGING_DIR" "$linked_plugin"
+for target in "$linked_plugin" "$root/missing plugin"; do
+    link_prefix="$root/symlink prefix"
+    link_destination="$link_prefix/libexec/container-plugins/compose"
+    mkdir -p "${link_destination%/compose}"
+    ln -s "$target" "$link_destination"
+    for mode in default legacy; do
+        install_args=(--prefix "$link_prefix")
+        if [[ $mode == legacy ]]; then install_args+=(--replace); fi
+        assert_install_refused "$link_destination" "${install_args[@]}"
+        [[ -L "$link_destination" && $(readlink "$link_destination") == "$target" ]]
+        diff -r "$COMPOSE_STAGING_DIR" "$linked_plugin"
+        [[ ! -e "$root/missing plugin" ]]
+    done
+    rm "$link_destination"
+done
 if ./scripts/install.sh --prefix relative >/dev/null 2>&1; then
     echo 'Installer accepted a relative prefix.' >&2; exit 1
 fi
@@ -61,4 +124,12 @@ archive_prefix="$root/archive-prefix"
 archive_destination="$archive_prefix/libexec/container-plugins/compose"
 [[ -x "$archive_destination/bin/compose" && -f "$archive_destination/config.toml" ]]
 [[ ! -e "$archive_destination/install.sh" ]] || { echo 'Installer copied itself into the plugin.' >&2; exit 1; }
-printf '%s\n' 'Installer checks passed: spaces, install, replacement, foreign-plugin refusal, prefix validation, umask, and release archive.'
+# The extracted installer must also upgrade an existing release without the
+# legacy flag, and must not leave its own copy or obsolete files installed.
+printf '%s\n' '#!/bin/sh' 'echo archive-upgrade' > "$extracted/bin/compose"
+printf '%s\n' 'obsolete' > "$archive_destination/obsolete"
+(cd "$root" && env -u COMPOSE_STAGING_DIR "$extracted/install.sh" --prefix "$archive_prefix" >/dev/null)
+[[ $("$archive_destination/bin/compose") == archive-upgrade ]]
+cmp "$extracted/config.toml" "$archive_destination/config.toml"
+[[ ! -e "$archive_destination/obsolete" && ! -e "$archive_destination/install.sh" ]]
+printf '%s\n' 'Installer checks passed: spaces, install, upgrades, foreign-plugin and symlink refusal, prefix validation, umask, and release archive.'
